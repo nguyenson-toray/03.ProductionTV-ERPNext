@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:flutter/services.dart';
 import 'package:network_info_plus/network_info_plus.dart';
@@ -89,6 +90,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
       }
       // Reset retry count nếu thành công
       _configRetryCount = 0;
+
+      // The following line will enable the Android and iOS wakelock.
+      WakelockPlus.enable();
     } catch (e) {
       _handleConfigError(e.toString());
     }
@@ -125,7 +129,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
             Text('MAC : $mac'),
           ],
         ),
-        alignment: Alignment.center,
+        alignment: Alignment.bottomRight,
         padding: EdgeInsets.all(3),
         callbacks: ToastificationCallbacks(
           onAutoCompleteCompleted: (_) => _initConfig(),
