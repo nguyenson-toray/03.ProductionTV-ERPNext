@@ -1,4 +1,4 @@
-package tv.tiqn.com
+package tv.tiqn.local
 
 import io.flutter.embedding.android.FlutterActivity
 

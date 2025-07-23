@@ -15,11 +15,18 @@ void main() => runApp(const ToastificationWrapper(child: MyApp()));
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'ERP TV App',
-    home: const WebViewScreen(),
-    debugShowCheckedModeBanner: false,
-  );
+  Widget build(BuildContext context) {
+    // Set landscape orientation
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    return MaterialApp(
+      title: 'ERP TV App',
+      home: const WebViewScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
 }
 
 class WebViewScreen extends StatefulWidget {
@@ -111,9 +118,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
         type: ToastificationType.error,
         style: ToastificationStyle.flatColored,
         autoCloseDuration: const Duration(seconds: 30),
-        title: const Text(
-          'Đã xảy ra lỗi !\nHãy chụp ảnh màn hình TV & gửi cho Sơn - IT',
-        ),
+        title: const Text('Lỗi tải cấu hình'),
         showProgressBar: true,
         progressBarTheme: ProgressIndicatorThemeData(),
         icon: Icon(Icons.error_sharp, color: Colors.redAccent),
@@ -155,7 +160,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
 
   Future<void> _initNetworkInfo() async {
     final info = NetworkInfo();
-    final ip = await info.getWifiIP();
+    var ip = await info.getWifiIP();
+    // if (ip == '10.0.3.1') ip = '10.0.1.51'; // phone SonNT
     final mac = await info.getWifiBSSID();
     setState(() {
       _wifiIp = ip;
@@ -170,8 +176,27 @@ class _WebViewScreenState extends State<WebViewScreen> {
     _setupAnnouncement();
   }
 
+  /// Lấy dashboard link phù hợp theo mode
+  String _getDashboardLink() {
+    if (_tvConfig == null) return '';
+
+    // Nếu đang ở debug mode và có dashboardLinkDebug thì sử dụng
+    if (kDebugMode &&
+        _tvConfig!.dashboardLinkDebug != null &&
+        _tvConfig!.dashboardLinkDebug!.isNotEmpty) {
+      return _tvConfig!.dashboardLinkDebug!;
+    }
+
+    // Ngược lại sử dụng dashboardLink thông thường
+    return _tvConfig!.dashboardLink;
+  }
+
   void _initializeWebView() {
     if (_tvConfig == null) return;
+
+    final dashboardUrl = _getDashboardLink();
+    if (dashboardUrl.isEmpty) return;
+
     setState(() {
       _controller = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -185,7 +210,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
             print('JS Message: ${message.message}');
           },
         )
-        ..loadRequest(Uri.parse(_tvConfig!.dashboardLink));
+        ..loadRequest(Uri.parse(dashboardUrl));
     });
   }
 
@@ -315,7 +340,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
                         'Đang tải dữ liệu...',
                         style: TextStyle(
                           fontSize: 18,
-                          color: Colors.blue,
+                          color: kDebugMode ? Colors.orange : Colors.blue,
                           fontWeight: FontWeight.w500,
                         ),
                         textAlign: TextAlign.center,

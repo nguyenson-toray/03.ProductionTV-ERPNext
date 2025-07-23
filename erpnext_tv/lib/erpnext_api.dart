@@ -5,6 +5,7 @@ import 'dart:convert';
 @immutable
 class TVConfig {
   final String dashboardLink;
+  final String dashboardLinkDebug;
   final int reloadInterval;
   final String? timeExitApp;
   final bool announcementEnable;
@@ -16,6 +17,7 @@ class TVConfig {
 
   const TVConfig({
     required this.dashboardLink,
+    required this.dashboardLinkDebug,
     required this.reloadInterval,
     this.timeExitApp,
     required this.announcementEnable,
@@ -32,6 +34,7 @@ class TVConfig {
   ) {
     return TVConfig(
       dashboardLink: detail['dashboard_link'] ?? '',
+      dashboardLinkDebug: detail['dashboard_link_debug'] ?? '',
       reloadInterval: config['reload_interval'] ?? 30,
       timeExitApp: config['time_exit_app'],
       announcementEnable: (config['announcement_enable'] ?? 0) == 1,
@@ -45,6 +48,7 @@ class TVConfig {
 
   Map<String, dynamic> toMap() => {
     'dashboardLink': dashboardLink,
+    'dashboardLinkDebug': dashboardLinkDebug,
     'reloadInterval': reloadInterval,
     'timeExitApp': timeExitApp,
     'announcementEnable': announcementEnable,
@@ -55,6 +59,7 @@ class TVConfig {
 
   bool isEqual(TVConfig other) =>
       dashboardLink == other.dashboardLink &&
+      dashboardLinkDebug == other.dashboardLinkDebug &&
       reloadInterval == other.reloadInterval &&
       timeExitApp == other.timeExitApp &&
       announcementEnable == other.announcementEnable &&
@@ -70,6 +75,7 @@ class TVConfig {
   @override
   int get hashCode => Object.hash(
     dashboardLink,
+    dashboardLinkDebug,
     reloadInterval,
     timeExitApp,
     announcementEnable,
@@ -82,7 +88,7 @@ class TVConfig {
 Future<TVConfig?> fetchTVConfigByIp(String ip) async {
   final url = Uri.parse(
     kDebugMode
-        ? 'http://erp-sonnt.tiqn.local/api/resource/TV Config/config'
+        ? 'http://10.0.1.21/api/resource/TV Config/config'
         : 'http://erp.tiqn.local/api/resource/TV Config/config',
   );
   final response = await http.get(url);

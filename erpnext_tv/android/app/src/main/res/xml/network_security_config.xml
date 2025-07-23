@@ -1,6 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
+        <!-- Debug domain -->
         <domain includeSubdomains="true">erp-sonnt.tiqn.local</domain>
+        <domain includeSubdomains="true">erp-sonnt</domain>
+        <domain includeSubdomains="true">erp-vinhnt.tiqn.local</domain>
+        <domain includeSubdomains="true">erp-vinhnt</domain>
+        <!-- Production domain -->
+        <domain includeSubdomains="true">erp.tiqn.local</domain>
+        <domain includeSubdomains="true">erp</domain>
+        <!-- Debug IP nếu cần -->
+        <domain includeSubdomains="true">10.0.1.20</domain>
+        <domain includeSubdomains="true">10.0.1.21</domain>
+        <domain includeSubdomains="true">10.0.1.22</domain>
     </domain-config>
-</network-security-config> 
+</network-security-config>
