@@ -9,9 +9,6 @@ import 'package:flutter/foundation.dart';
 import 'erpnext_api.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:toastification/toastification.dart';
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
-import 'dart:io';
 
 void main() => runApp(const ToastificationWrapper(child: MyApp()));
 
@@ -25,8 +22,46 @@ class MyApp extends StatelessWidget {
     ]);
     return MaterialApp(
       title: 'ERP TV App',
-      home: const WebViewScreen(),
+      home: const SplashScreen(),
       debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Timer(const Duration(seconds: 2), () {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const WebViewScreen()),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Image.asset('assets/logo.png'),
+            const SizedBox(height: 16.0),
+            const Text(
+              textAlign: TextAlign.center,
+              'Công Ty TNHH TORAY International Việt Nam\nChi Nhánh Quảng Ngãi',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -43,26 +78,21 @@ class _WebViewScreenState extends State<WebViewScreen> {
   final String? _manualIp = '10.0.1.51';
   TVConfig? _tvConfig;
   Timer? _reloadTimer, _exitTimer, _announcementTimer, _announcementHideTimer;
-  bool _showAnnouncement = false, _loading = true;
-  String? _appVersion, _wifiIp, _wifiMac, _lastContentHash;
-  DateTime? _lastContentCheckTime;
-  int _configRetryCount = 0;
+  bool _showAnnouncement = false;
+  String? _appVersion;
+  int _consecutiveTimeouts = 0;
+  TVConfig? _savedConfig;
+  bool _hasNetworkError = false;
+  bool _hasConfigError = false;
+  Timer? _forceReloadTimer;
+  Timer? _configRetryTimer;
+  bool _isAppInitialized = false;
 
-  // Settings - Simplified
-  static const Duration _timeout = Duration(seconds: 30);
-  static const bool _enableContentChecking = true;
-  static const int _contentCheckCooldown = 30;
-  static const int _maxRetries = 3;
-
-  // Status indicators
-  bool _configLoadFailed = false;
-  bool _webContentLoadFailed = false;
 
   @override
   void initState() {
     super.initState();
     _initAppVersion();
-    _initNetworkInfo();
     _initConfig();
   }
 
@@ -78,6 +108,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
       _exitTimer,
       _announcementTimer,
       _announcementHideTimer,
+      _forceReloadTimer,
+      _configRetryTimer,
     ].forEach((timer) => timer?.cancel());
   }
 
@@ -95,70 +127,72 @@ class _WebViewScreenState extends State<WebViewScreen> {
         return;
       }
 
-      final oldConfig = _tvConfig;
-      setState(() {
-        _tvConfig = config;
-        _loading = false;
-        _configLoadFailed = false;
-      });
-
-      // Setup timers khi có config mới hoặc time changes
-      if (oldConfig == null || _hasTimeChanges(oldConfig, config)) {
-        if (kDebugMode) print('Setting up timers due to time changes');
+      // First time load: Save config and mark as initialized
+      if (!_isAppInitialized) {
+        if (kDebugMode) print('Initial app startup - saving config and marking as initialized');
+        _savedConfig = config;
+        setState(() {
+          _tvConfig = config;
+          _hasNetworkError = false;
+          _hasConfigError = false;
+          _isAppInitialized = true; // Mark app as initialized
+        });
+        _configRetryTimer?.cancel(); // Cancel retry timer on success
+        _forceReloadTimer?.cancel(); // Cancel force reload timer on success
         _setupAllTimers();
-      } else if (_hasDashboardChanges(oldConfig, config)) {
-        if (kDebugMode) print('Dashboard changed, updating WebView');
-        _initializeWebView();
-      } else if (oldConfig.reloadInterval != config.reloadInterval) {
-        if (kDebugMode) print('Reload interval changed');
-        _setupReloadTimer();
+        WakelockPlus.enable();
+        return;
       }
 
-      _configRetryCount = 0;
-      WakelockPlus.enable();
+      // Post-initialization: Apply config and check for changes
+      setState(() {
+        _tvConfig = config;
+        _hasNetworkError = false;
+        _hasConfigError = false;
+      });
+
+      // Compare with saved config for changes
+      if (_hasTimeChanges(_savedConfig!, config)) {
+        if (kDebugMode) print('Time changes detected → Setup timers');
+        _setupAllTimers();
+        _savedConfig = config;
+      } else if (_hasDashboardChanges(_savedConfig!, config)) {
+        if (kDebugMode) print('Link changes detected → Reinit WebView');
+        _initializeWebView();
+        _savedConfig = config;
+      } else {
+        if (kDebugMode) print('No config changes → Reload WebView with check');
+        _reloadWebViewWithCheck();
+      }
     } catch (e) {
+      if (kDebugMode) print('Config loading exception: $e');
       _handleConfigError(e.toString());
     }
   }
 
   void _handleConfigError(String error) {
-    _configRetryCount++;
-    setState(() => _configLoadFailed = true);
+    setState(() {
+      _hasConfigError = true;
+      _hasNetworkError = false;
+    });
 
-    if (_configRetryCount < _maxRetries) {
-      Future.delayed(const Duration(seconds: 10), _initConfig);
+    if (!_isAppInitialized) {
+      // During startup: Retry config loading every 30s until success
+      if (kDebugMode) print('Startup config error: $error - retrying in 30s');
+      _configRetryTimer?.cancel();
+      _configRetryTimer = Timer(const Duration(seconds: 30), () {
+        if (kDebugMode) print('Retrying config load after 30s...');
+        _initConfig();
+      });
     } else {
-      setState(() => _loading = false);
-      _showErrorToast(error);
-      _configRetryCount = 0;
+      // After initialization: Don't retry config, just log error
+      if (kDebugMode) print('Post-init config error: $error - keeping current config');
     }
   }
 
-  void _showErrorToast(String error) {
-    toastification.show(
-      context: context,
-      type: ToastificationType.error,
-      style: ToastificationStyle.flatColored,
-      autoCloseDuration: const Duration(seconds: 30),
-      title: const Text('Lỗi tải cấu hình'),
-      description: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(error),
-          const SizedBox(height: 8),
-          Text('IP: ${_wifiIp ?? 'N/A'}'),
-          Text('MAC: ${_wifiMac ?? 'N/A'}'),
-        ],
-      ),
-      alignment: Alignment.bottomRight,
-      callbacks: ToastificationCallbacks(
-        onAutoCompleteCompleted: (_) => _initConfig(),
-      ),
-    );
-  }
 
   Future<String?> _getDeviceIp() async {
+    // Debug mode: Use manual IP if set
     if (kDebugMode && _manualIp?.isNotEmpty == true) return _manualIp;
     return await NetworkInfo().getWifiIP();
   }
@@ -168,15 +202,6 @@ class _WebViewScreenState extends State<WebViewScreen> {
     setState(() => _appVersion = info.version);
   }
 
-  Future<void> _initNetworkInfo() async {
-    final info = NetworkInfo();
-    final ip = await info.getWifiIP();
-    final mac = await info.getWifiBSSID();
-    setState(() {
-      _wifiIp = ip;
-      _wifiMac = mac;
-    });
-  }
 
   /// Setup tất cả timers khi có thay đổi time-related
   void _setupAllTimers() {
@@ -201,89 +226,74 @@ class _WebViewScreenState extends State<WebViewScreen> {
         oldConfig.dashboardLinkDebug != newConfig.dashboardLinkDebug;
   }
 
-  /// Smart reload - simplified
+  /// Smart reload based on initialization state
   Future<void> _smartReload() async {
     if (kDebugMode) print('Smart reload started');
 
-    try {
-      final newConfig = await fetchTVConfigByIpWithFallback(_deviceIp!);
-      if (newConfig == null) return;
-
-      final oldConfig = _tvConfig;
-      if (oldConfig == null) {
-        setState(() => _tvConfig = newConfig);
-        _setupAllTimers();
-        return;
-      }
-
-      if (oldConfig.toString() != newConfig.toString()) {
-        if (kDebugMode) print('Config changed, updating...');
-        setState(() => _tvConfig = newConfig);
-
-        if (_hasTimeChanges(oldConfig, newConfig)) {
-          _setupAllTimers();
-        } else if (_hasDashboardChanges(oldConfig, newConfig)) {
-          _initializeWebView();
-        } else if (oldConfig.reloadInterval != newConfig.reloadInterval) {
-          _setupReloadTimer();
-        }
-      } else if (_enableContentChecking) {
-        await _checkWebContentChange();
-      }
-    } catch (e) {
-      if (kDebugMode) print('Smart reload error: $e');
-      _controller?.reload();
+    if (!_isAppInitialized) {
+      // During startup: Try to load initial config
+      if (kDebugMode) print('App not initialized yet, attempting config load');
+      await _initConfig();
+    } else {
+      // After initialization: Only reload config to check for changes
+      if (kDebugMode) print('App initialized, checking for config changes');
+      await _initConfig();
     }
   }
 
-  /// Check web content với simplified logic
-  Future<void> _checkWebContentChange() async {
-    if (!_canCheckContent()) return;
 
-    _lastContentCheckTime = DateTime.now();
-    final dashboardUrl = _getDashboardLink();
-    if (dashboardUrl.isEmpty) return;
-
-    try {
-      final response = await TVHttpClient.head(dashboardUrl, timeout: _timeout);
-      if (response.statusCode == 200) {
-        final newHash = _generateHeaderHash(
-          response.headers['etag'],
-          response.headers['last-modified'],
-        );
-
-        if (_lastContentHash != null && _lastContentHash != newHash) {
-          if (kDebugMode) print('Content changed, reloading WebView');
-          _controller?.reload();
-        }
-        _lastContentHash = newHash;
-        setState(() => _webContentLoadFailed = false);
-      }
-    } catch (e) {
-      if (kDebugMode) print('Content check failed: $e');
-      setState(() => _webContentLoadFailed = true);
-    }
-  }
-
-  bool _canCheckContent() {
-    return _lastContentCheckTime == null ||
-        DateTime.now().difference(_lastContentCheckTime!).inSeconds >=
-            _contentCheckCooldown;
-  }
-
-  String _generateHeaderHash(String? etag, String? lastModified) {
-    final headerString =
-        '${etag ?? 'no-etag'}_${lastModified ?? 'no-modified'}';
-    return sha256.convert(utf8.encode(headerString)).toString();
-  }
 
   String _getDashboardLink() {
     if (_tvConfig == null) return '';
 
+    // Debug mode: Use debug link if available
     if (kDebugMode && _tvConfig!.dashboardLinkDebug?.isNotEmpty == true) {
       return _tvConfig!.dashboardLinkDebug!;
     }
     return _tvConfig!.dashboardLink;
+  }
+
+  /// Check URL content and reload WebView if valid
+  Future<void> _reloadWebViewWithCheck() async {
+    final dashboardUrl = _getDashboardLink();
+    if (dashboardUrl.isEmpty || dashboardUrl == 'about:blank') {
+      if (kDebugMode) print('Invalid URL, setting config error');
+      setState(() {
+        _hasConfigError = true;
+        _hasNetworkError = false;
+      });
+      return;
+    }
+
+    try {
+      if (kDebugMode) print('Checking URL before reload: $dashboardUrl');
+      final response = await TVHttpClient.get(dashboardUrl, timeout: Duration(seconds: 10));
+      
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        if (kDebugMode) print('URL valid, reloading WebView');
+        _controller?.loadRequest(Uri.parse(dashboardUrl));
+        setState(() {
+          _hasNetworkError = false;
+          _hasConfigError = false;
+        });
+        _forceReloadTimer?.cancel();
+      } else {
+        if (kDebugMode) print('URL error ${response.statusCode}, keeping current WebView');
+        _handleUrlError();
+      }
+    } catch (e) {
+      if (kDebugMode) print('URL check failed: $e, keeping current WebView');
+      _handleUrlError();
+    }
+  }
+
+  /// Handle URL errors - keep current WebView, start force reload timer
+  void _handleUrlError() {
+    setState(() {
+      _hasNetworkError = true;
+      _hasConfigError = false;
+    });
+    _startForceReloadTimer();
   }
 
   void _initializeWebView() {
@@ -296,18 +306,160 @@ class _WebViewScreenState extends State<WebViewScreen> {
         ..setUserAgent(
           'Mozilla/5.0 (Linux; Android 10; Android TV) AppleWebKit/537.36',
         )
-        ..setNavigationDelegate(_buildNavigationDelegate())
-        ..loadRequest(Uri.parse(dashboardUrl));
+        ..setNavigationDelegate(_buildNavigationDelegate());
     });
+    
+    // Check if URL is valid before loading
+    if (dashboardUrl == 'about:blank') {
+      if (kDebugMode) print('Mock config detected, setting config error (no URL force reload needed)');
+      setState(() {
+        _hasConfigError = true;
+        _hasNetworkError = false;
+      });
+      // Mock config doesn't need URL force reload
+    } else {
+      // Load URL with validation
+      _loadUrlSafely(dashboardUrl);
+    }
+  }
+  
+  /// Start 30s force reload timer for URL only (not config)
+  void _startForceReloadTimer() {
+    _forceReloadTimer?.cancel();
+    if (kDebugMode) print('Starting 30s URL force reload timer');
+    
+    _forceReloadTimer = Timer(const Duration(seconds: 30), () {
+      if (kDebugMode) print('Force reload URL after 30s error timeout (no config reload)');
+      _performForceReload();
+    });
+  }
+  
+  /// Force reload WebView after error timeout - simple URL reload
+  void _performForceReload() {
+    final dashboardUrl = _getDashboardLink();
+    if (dashboardUrl.isEmpty || dashboardUrl == 'about:blank') {
+      if (kDebugMode) print('Force reload skipped: Invalid URL');
+      return;
+    }
+    
+    if (kDebugMode) print('Force reload: Loading $dashboardUrl');
+    _controller?.loadRequest(Uri.parse(dashboardUrl));
+  }
+
+  /// Load URL with validation and error handling
+  Future<void> _loadUrlSafely(String url) async {
+    if (kDebugMode) print('Validating URL before loading: $url');
+    
+    // First validate URL by checking if it's reachable
+    final isValid = await _validateUrl(url);
+    if (!isValid) {
+      if (kDebugMode) print('URL validation failed, setting error state but NOT loading');
+      setState(() {
+        _hasNetworkError = true;
+        _hasConfigError = false;
+      });
+      _startForceReloadTimer();
+      return;
+    }
+    
+    try {
+      if (kDebugMode) print('URL validated successfully, loading: $url');
+      await _controller?.loadRequest(Uri.parse(url));
+    } catch (e) {
+      if (kDebugMode) print('URL loading failed after validation: $e');
+      // Don't change WebView content on loading error, just set error state
+      setState(() {
+        _hasNetworkError = true;
+        _hasConfigError = false;
+      });
+      _startForceReloadTimer();
+    }
+  }
+  
+  /// Validate URL by attempting to connect
+  Future<bool> _validateUrl(String url) async {
+    try {
+      final response = await TVHttpClient.get(url, timeout: Duration(seconds: 5));
+      final isValid = response.statusCode >= 200 && response.statusCode < 400;
+      if (kDebugMode) print('URL validation result: $isValid (status: ${response.statusCode})');
+      return isValid;
+    } catch (e) {
+      if (kDebugMode) print('URL validation error: $e');
+      return false;
+    }
   }
 
   NavigationDelegate _buildNavigationDelegate() => NavigationDelegate(
     onWebResourceError: (error) {
       if (kDebugMode) print('WebView error: ${error.description}');
-      setState(() => _webContentLoadFailed = true);
+
+      // Track consecutive timeouts
+      if (error.description.contains('TIMED_OUT') || 
+          error.description.contains('ERR_NETWORK') ||
+          error.description.contains('ERR_CONNECTION')) {
+        _consecutiveTimeouts++;
+        if (kDebugMode) print('Network error (consecutive: $_consecutiveTimeouts): ${error.description}');
+      } else {
+        _consecutiveTimeouts = 0;
+      }
+
+      setState(() {
+        _hasNetworkError = true; // Update network error state for clock
+        _hasConfigError = false; // Clear config error when network error
+      });
+      
+      // Start 30s force reload timer on network error
+      _startForceReloadTimer();
+      
+      if (kDebugMode) print('Network error detected, error state set but WebView content unchanged');
     },
-    onPageStarted: (url) => _injectPolyfill(),
-    onPageFinished: (url) => setState(() => _webContentLoadFailed = false),
+    onNavigationRequest: (request) {
+      // Always block navigation to error pages
+      if (request.url.contains('chrome-error://') || 
+          request.url.contains('chrome://') ||
+          request.url.contains('data:text/html,<')) {
+        if (kDebugMode) print('Blocked navigation to error page: ${request.url}');
+        return NavigationDecision.prevent;
+      }
+      
+      // Allow about:blank and data:text/html for our offline page
+      if (request.url == 'about:blank' || 
+          request.url.startsWith('data:text/html')) {
+        return NavigationDecision.navigate;
+      }
+      
+      // Allow navigation to dashboard URLs
+      final dashboardUrl = _getDashboardLink();
+      if (dashboardUrl.isNotEmpty && 
+          dashboardUrl != 'about:blank' &&
+          request.url.startsWith(dashboardUrl.split('?')[0])) {
+        return NavigationDecision.navigate;
+      }
+      
+      // Block all other navigation
+      if (kDebugMode) print('Blocked navigation to unknown URL: ${request.url}');
+      return NavigationDecision.prevent;
+    },
+    onPageStarted: (url) {
+      // Only inject polyfill for valid dashboard URLs
+      if (!url.contains('chrome-error://')) {
+        _injectPolyfill();
+      }
+    },
+    onPageFinished: (url) {
+      // Only consider it successful if it's not an error page
+      if (!url.contains('chrome-error://') && !url.contains('data:text/html')) {
+        _consecutiveTimeouts = 0; // Reset on successful load
+        setState(() {
+          _hasNetworkError = false; // Clear network error on successful page load
+          _hasConfigError = false; // Clear config error on successful page load
+        });
+        _forceReloadTimer?.cancel(); // Cancel force reload timer on success
+        if (kDebugMode) print('Page loaded successfully: $url');
+      } else {
+        if (kDebugMode) print('Error page detected, keeping previous state: $url');
+      }
+    },
   );
 
   Future<void> _injectPolyfill() async {
@@ -328,10 +480,12 @@ class _WebViewScreenState extends State<WebViewScreen> {
     _reloadTimer?.cancel();
     if (_tvConfig == null) return;
 
+    final interval = _getReloadInterval(_tvConfig!);
     _reloadTimer = Timer.periodic(
-      Duration(seconds: _tvConfig!.reloadInterval),
+      Duration(seconds: interval),
       (_) => _smartReload(),
     );
+    if (kDebugMode) print('Reload timer set to ${interval}s (${kDebugMode ? 'debug' : 'release'} mode)');
   }
 
   void _setupExitTimer() {
@@ -414,18 +568,24 @@ class _WebViewScreenState extends State<WebViewScreen> {
     }
   }
 
-  Color _getStatusIndicatorColor() {
-    if (_configLoadFailed) return Colors.red;
-    if (_webContentLoadFailed) return Colors.orange;
-    return Colors.transparent;
+
+
+  /// Get appropriate reload interval based on app mode
+  int _getReloadInterval(TVConfig config) {
+    // Debug mode: Use debug reload interval if available
+    if (kDebugMode && config.reloadIntervalDebug != null) {
+      return config.reloadIntervalDebug!;
+    }
+    return config.reloadInterval;
   }
+
 
   @override
   Widget build(BuildContext context) => Scaffold(
     body: Stack(
       children: [
         SafeArea(
-          child: _loading || _controller == null
+          child: _controller == null
               ? _buildLoadingWidget()
               : WebViewWidget(controller: _controller!),
         ),
@@ -446,14 +606,17 @@ class _WebViewScreenState extends State<WebViewScreen> {
         ),
 
         // Clock
-        Positioned(right: 5, top: 5, child: _DigitalClock()),
+        Positioned(right: 5, top: 5, child: _DigitalClock(
+          hasNetworkError: _hasNetworkError,
+          hasConfigError: _hasConfigError,
+        )),
 
         // Announcement
         if (_showAnnouncement && _tvConfig?.announcement != null)
           _buildAnnouncementOverlay(),
 
-        // Status & Version
-        _buildStatusIndicator(),
+        // Version only
+        _buildVersionInfo(),
       ],
     ),
   );
@@ -537,37 +700,31 @@ class _WebViewScreenState extends State<WebViewScreen> {
     ),
   );
 
-  Widget _buildStatusIndicator() => Positioned(
+  Widget _buildVersionInfo() => Positioned(
     right: 2,
     bottom: 2,
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        Text(
-          'v${_appVersion ?? ''} - IT Team',
-          style: const TextStyle(
-            color: Colors.black87,
-            fontSize: 6,
-            fontWeight: FontWeight.w500,
-          ),
-          textAlign: TextAlign.right,
-        ),
-        Container(
-          width: 8,
-          height: 8,
-          margin: const EdgeInsets.only(right: 4, bottom: 8),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: _getStatusIndicatorColor(),
-          ),
-        ),
-      ],
+    child: Text(
+      'v${_appVersion ?? ''} - IT Team',
+      style: const TextStyle(
+        color: Colors.black87,
+        fontSize: 6,
+        fontWeight: FontWeight.w500,
+      ),
+      textAlign: TextAlign.right,
     ),
   );
 }
 
 class _DigitalClock extends StatefulWidget {
+  final bool hasNetworkError;
+  final bool hasConfigError;
+  
+  const _DigitalClock({
+    super.key, 
+    this.hasNetworkError = false,
+    this.hasConfigError = false,
+  });
+  
   @override
   State<_DigitalClock> createState() => _DigitalClockState();
 }
@@ -592,13 +749,23 @@ class _DigitalClockState extends State<_DigitalClock> {
   }
 
   @override
-  Widget build(BuildContext context) => Text(
-    "${_now.hour.toString().padLeft(2, '0')}:${_now.minute.toString().padLeft(2, '0')}:${_now.second.toString().padLeft(2, '0')}",
-    style: const TextStyle(
-      color: Colors.black87,
-      fontSize: 18,
-      fontWeight: FontWeight.bold,
-      fontFamily: 'Courier',
-    ),
-  );
+  Widget build(BuildContext context) {
+    Color clockColor = Colors.black87; // Default color
+    
+    if (widget.hasConfigError) {
+      clockColor = Colors.orange; // Config error = orange
+    } else if (widget.hasNetworkError) {
+      clockColor = Colors.red; // Network error = red
+    }
+    
+    return Text(
+      "${_now.hour.toString().padLeft(2, '0')}:${_now.minute.toString().padLeft(2, '0')}:${_now.second.toString().padLeft(2, '0')}",
+      style: TextStyle(
+        color: clockColor,
+        fontSize: 18,
+        fontWeight: FontWeight.bold,
+        fontFamily: 'Courier',
+      ),
+    );
+  }
 }

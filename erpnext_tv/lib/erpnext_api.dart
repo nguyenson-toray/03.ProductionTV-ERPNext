@@ -1,10 +1,9 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'dart:io';
 import 'dart:async';
 
-/// Simplified HTTP Client
+/// HTTP Client for TV App
 class TVHttpClient {
   static const Duration _timeout = Duration(seconds: 30);
 
@@ -25,29 +24,13 @@ class TVHttpClient {
         )
         .timeout(timeout ?? _timeout);
   }
-
-  static Future<http.Response> head(
-    String url, {
-    Map<String, String>? headers,
-    Duration? timeout,
-  }) async {
-    return await http
-        .head(
-          Uri.parse(url),
-          headers: {
-            'User-Agent': 'ERP-TV-App/1.0',
-            'Connection': 'keep-alive',
-            ...?headers,
-          },
-        )
-        .timeout(timeout ?? _timeout);
-  }
 }
 
 class TVConfig {
   final String dashboardLink;
   final String? dashboardLinkDebug;
   final int reloadInterval;
+  final int? reloadIntervalDebug;
   final String? timeExitApp;
   final bool announcementEnable;
   final String? announcementBegin;
@@ -60,6 +43,7 @@ class TVConfig {
     required this.dashboardLink,
     this.dashboardLinkDebug,
     required this.reloadInterval,
+    this.reloadIntervalDebug,
     this.timeExitApp,
     required this.announcementEnable,
     this.announcementBegin,
@@ -74,6 +58,7 @@ class TVConfig {
       dashboardLink: json['dashboard_link'] ?? '',
       dashboardLinkDebug: json['dashboard_link_debug'],
       reloadInterval: json['reload_interval'] ?? 60,
+      reloadIntervalDebug: json['reload_interval_debug'],
       timeExitApp: json['time_exit_app'],
       announcementEnable: _parseBool(json['announcement_enable']),
       announcementBegin: json['announcement_begin'],
@@ -96,6 +81,7 @@ class TVConfig {
         'dashboardLink: "$dashboardLink", '
         'dashboardLinkDebug: "${dashboardLinkDebug ?? 'null'}", '
         'reloadInterval: $reloadInterval, '
+        'reloadIntervalDebug: ${reloadIntervalDebug ?? 'null'}, '
         'timeExitApp: "${timeExitApp ?? 'null'}", '
         'announcementEnable: $announcementEnable, '
         'announcementBegin: "${announcementBegin ?? 'null'}", '
@@ -112,6 +98,7 @@ class TVConfig {
             other.dashboardLink == dashboardLink &&
             other.dashboardLinkDebug == dashboardLinkDebug &&
             other.reloadInterval == reloadInterval &&
+            other.reloadIntervalDebug == reloadIntervalDebug &&
             other.timeExitApp == timeExitApp &&
             other.announcementEnable == announcementEnable &&
             other.announcementBegin == announcementBegin &&
@@ -126,6 +113,7 @@ class TVConfig {
     dashboardLink,
     dashboardLinkDebug,
     reloadInterval,
+    reloadIntervalDebug,
     timeExitApp,
     announcementEnable,
     announcementBegin,
@@ -136,39 +124,27 @@ class TVConfig {
   );
 }
 
-/// Fetch TV Config từ ERPNext API
+/// Fetch TV Config from ERPNext API
 Future<TVConfig?> fetchTVConfigByIp(String deviceIp) async {
   try {
-    const String baseUrl = 'http://10.0.1.21';
-    final response = await TVHttpClient.get(
-      '$baseUrl/api/resource/TV Config/config',
-    );
-
-    if (response.statusCode != 200) {
-      if (kDebugMode) print('HTTP Error: ${response.statusCode}');
-      return null;
+    String apiUrl;
+    if (kDebugMode) {
+      apiUrl = 'http://erp-sonnt.tiqn.local/api/resource/TV Config/config';
+    } else {
+      apiUrl = 'http://erp.tiqn.local/api/resource/TV Config/config';
     }
+
+    final response = await TVHttpClient.get(apiUrl);
+    if (response.statusCode != 200) return null;
 
     final responseData = json.decode(response.body) as Map<String, dynamic>;
     final configData = _extractConfigData(responseData);
+    if (configData == null) return null;
 
-    if (configData == null) {
-      if (kDebugMode) print('No valid config data found');
-      return null;
-    }
-
-    // Find matching IP config or use first available
     final matchedConfig = _findMatchingConfig(configData, deviceIp);
     return matchedConfig != null ? TVConfig.fromJson(matchedConfig) : null;
   } catch (e) {
-    if (kDebugMode) {
-      print('Error fetching TV config: $e');
-      if (e is TimeoutException) {
-        print('Timeout - check network connection');
-      } else if (e is SocketException) {
-        print('Network error: ${e.message}');
-      }
-    }
+    if (kDebugMode) print('Config fetch error: $e');
     return null;
   }
 }
@@ -207,95 +183,27 @@ Map<String, dynamic>? _findMatchingConfig(
   return configData;
 }
 
-/// Fetch with fallback to mock data
+/// Fetch config with fallback to mock data
 Future<TVConfig?> fetchTVConfigByIpWithFallback(String deviceIp) async {
   final config = await fetchTVConfigByIp(deviceIp);
   if (config != null) return config;
 
-  // Mock data for debug mode
+  // Mock data for debug mode when server unavailable
   if (kDebugMode) {
-    if (kDebugMode) print('Using mock TV config');
+    if (kDebugMode) print('Using mock config - server unavailable');
     return TVConfig(
-      dashboardLink: 'https://example.com/dashboard',
-      dashboardLinkDebug: 'https://localhost:3000/debug',
-      reloadInterval: 30,
-      timeExitApp: '23:00:00',
+      dashboardLink: 'about:blank',
+      dashboardLinkDebug: 'about:blank',
+      reloadInterval: 600,
+      reloadIntervalDebug: 10,
+      timeExitApp: '16:5:00',
       announcementEnable: true,
-      announcementBegin: '09:00:00',
-      announcementDuration: 30,
-      announcement: '<p>Mock announcement</p>',
-      announcementTitle: 'TEST MODE',
+      announcementBegin: '07:50:00',
+      announcementDuration: 5,
+      announcement: '<p>Không thể kết nối server. Chế độ offline.</p>',
+      announcementTitle: 'CHẾ ĐỘ OFFLINE',
       announcementFontSize: 18,
     );
   }
-
   return null;
-}
-
-/// Network diagnostics utility
-class NetworkDiagnostics {
-  static Future<bool> pingHost(
-    String host, {
-    Duration timeout = const Duration(seconds: 5),
-  }) async {
-    try {
-      final result = await InternetAddress.lookup(host).timeout(timeout);
-      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
-    } catch (e) {
-      if (kDebugMode) print('Ping failed for $host: $e');
-      return false;
-    }
-  }
-
-  static Future<bool> hasInternetConnection() async {
-    try {
-      return await pingHost('8.8.8.8');
-    } catch (e) {
-      return false;
-    }
-  }
-
-  static Future<Duration?> measureLatency(String host) async {
-    try {
-      final stopwatch = Stopwatch()..start();
-      final result = await InternetAddress.lookup(
-        host,
-      ).timeout(const Duration(seconds: 10));
-      stopwatch.stop();
-      return result.isNotEmpty ? stopwatch.elapsed : null;
-    } catch (e) {
-      if (kDebugMode) print('Latency measurement failed for $host: $e');
-      return null;
-    }
-  }
-}
-
-/// Validation utility
-bool isValidTVConfig(TVConfig config) {
-  if (config.dashboardLink.isEmpty || config.reloadInterval <= 0) return false;
-
-  // Validate time formats
-  return _isValidTimeFormat(config.timeExitApp) &&
-      _isValidTimeFormat(config.announcementBegin);
-}
-
-bool _isValidTimeFormat(String? timeString) {
-  if (timeString == null) return true;
-
-  final parts = timeString.split(':');
-  if (parts.length != 3) return false;
-
-  try {
-    final hour = int.parse(parts[0]);
-    final minute = int.parse(parts[1]);
-    final second = int.parse(parts[2]);
-    return hour >= 0 &&
-        hour <= 23 &&
-        minute >= 0 &&
-        minute <= 59 &&
-        second >= 0 &&
-        second <= 59;
-  } catch (e) {
-    return false;
-  }
 }

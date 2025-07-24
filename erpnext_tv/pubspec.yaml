@@ -50,13 +50,13 @@ package_rename_config:
     override_old_package: # (Optional) (String) Use this to delete the old folder structure of MainActivity or to use the existing code with the new package name
     lang: # (Optional) (String) The android development language {kotlin(default) or java}
 icons_launcher:
-  image_path: 'assets\icon_laucher.png'
+  image_path: 'assets\ic_launcher2.png'
   platforms:
     android:
       enable: true
     ios:
       enable: true
-
+# dart run icons_launcher:create
 dev_dependencies:
   flutter_test:
     sdk: flutter
