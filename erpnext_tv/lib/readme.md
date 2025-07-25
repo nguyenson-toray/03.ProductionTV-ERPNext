@@ -2,14 +2,16 @@
 
 ## 🚀 Overview
 
-Enhanced ERP TV Dashboard App với smart reload system, intelligent timer management, và comprehensive error handling.
+Enhanced ERP TV Dashboard App với ping-based smart reload system, intelligent timer management, wifi auto-recovery, comprehensive error handling, và real-time error display widget.
 
 ## ✨ Key Features
 
-### 🎯 Smart Reload System
-- **Config-based reload**: Chỉ reload khi cần thiết
-- **Content change detection**: Monitor dashboard content changes
-- **Intelligent updates**: Phân biệt loại thay đổi và xử lý phù hợp
+### 🎯 Ping-Based Smart Reload System
+- **HTTP-first approach**: Thử load config/content bình thường trước
+- **Internal network testing**: Ping default gateway (10.0.0.1) + server IP thay vì Google
+- **Wifi auto-recovery**: Tự động reset wifi khi ping thất bại
+- **Intelligent error handling**: Phân biệt HTTP error vs network error
+- **Real-time error display**: Widget hiển thị lỗi chi tiết ở góc dưới bên trái
 
 ### ⏱️ Unified Timeout System  
 - **30 seconds timeout** cho tất cả HTTP requests
@@ -22,10 +24,13 @@ Enhanced ERP TV Dashboard App với smart reload system, intelligent timer manag
 - **Selective updates**: Chỉ update components cần thiết
 - **Robust scheduling**: Exit app timer và announcement timer
 
-### 📱 Status Indicator
-- **Visual feedback**: Ô tròn nhỏ 8x8px ở góc phải dưới
-- **3 trạng thái**: 🔴 Config fail, 🟠 WebView fail, ⚪ Normal
-- **Real-time status**: Cập nhật theo tình trạng hệ thống
+### 📱 Visual Status Indicators
+- **Clock Color Indicator**: Màu sắc đồng hồ thay đổi theo trạng thái
+  - 🔴 Ping fail, 🟡 HTTP fail, 🟠 Config error, ⚫ Normal
+- **Error Display Widget**: Chi tiết lỗi ở góc dưới bên trái
+  - Màu chấm tròn tương ứng với loại lỗi
+  - Thông báo lỗi chi tiết và rõ ràng
+  - Tự động ẩn khi không có lỗi
 
 ## 📦 Installation
 
@@ -64,21 +69,30 @@ const String baseUrl = 'http://YOUR_ERPNEXT_IP';
 
 ### Timeout Settings
 ```dart
-// main.dart line 29
+// HTTP request timeout
 static const Duration _timeout = Duration(seconds: 30);
+
+// Ping server timeout
+static const int _pingTimeout = 5; // seconds
 ```
 
-### Content Checking
+### WiFi Auto-Recovery Settings
 ```dart
-// main.dart lines 30-31
-static const bool _enableContentChecking = true;
-static const int _contentCheckCooldown = 30; // seconds
+// WiFi control delays
+static const Duration _wifiOffDelay = Duration(seconds: 2);
+static const Duration _wifiReconnectWait = Duration(seconds: 10);
 ```
 
-### Retry Settings  
+### Server Configuration
 ```dart
-// main.dart line 32
-static const int _maxRetries = 3;
+// erpnext_api.dart
+String getServerHost() {
+  if (kDebugMode) {
+    return 'erp-sonnt.tiqn.local';  // Debug server
+  } else {
+    return 'erp.tiqn.local';       // Production server
+  }
+}
 ```
 
 ## 🏗️ ERPNext Setup
@@ -137,16 +151,34 @@ GET /api/resource/TV Config/config
 }
 ```
 
-## 🔄 Smart Logic Flow
+## 🔄 Ping-Based Smart Logic Flow
 
-### Config Change Detection
+### New Reload Algorithm
 ```
-Timer Trigger → Fetch New Config
-├── Config unchanged? → Check web content (if enabled)
-├── Time settings changed? → Restart ALL timers
-├── Dashboard URL changed? → Reload WebView only
-├── Reload interval changed? → Restart reload timer only
-└── Other changes? → Full setup
+Timer Trigger → Try Normal HTTP Request
+├── HTTP Success → Update WebView (Clock: Black ⚫)
+├── HTTP Failed → Ping Server
+│   ├── Ping Success → Retry HTTP (Clock: Yellow 🟡)
+│   └── Ping Failed → Reset WiFi (Clock: Red 🔴)
+│       ├── WiFi Off → Wait 2s → WiFi On
+│       ├── Wait 10s for reconnection
+│       └── Retry config load
+└── Config Error → Show error (Clock: Orange 🟠)
+```
+
+### Internal Network Ping Process
+```
+HTTP Error Detected:
+├── Step 1: Test Gateway Connectivity (10.0.0.1)
+│   ├── HTTP request to default gateway
+│   └── Fallback: DNS lookup if HTTP fails
+├── Step 2: Test Server Connectivity
+│   ├── DNS lookup: 'erp-sonnt.tiqn.local' (debug) | 'erp.tiqn.local' (production)
+│   └── HTTP request to server
+├── Results:
+│   ├── Gateway OK + Server OK → HTTP problem only (Yellow 🟡)
+│   ├── Gateway OK + Server Fail → Server problem (Yellow 🟡)
+│   └── Gateway Fail → Network problem → WiFi reset (Red 🔴)
 ```
 
 ### Timer Management
@@ -162,95 +194,164 @@ Time Settings Changed Detection:
 
 ```
 ┌─────────────────────────────────┐
-│ Logo (90x36)            Clock   │
+│ Logo (90x36)     DD/MM HH:MM:SS │ ← Clock with color indicator
 │                                 │
 │                                 │
 │         WebView Content         │
 │                                 │
 │                                 │
-│                        ●v1.0.0  │ ← Status (8x8px)
+│ ● Error Message        v1.0.0   │ ← Error widget + Version
 │                        IT Team  │
 └─────────────────────────────────┘
 ```
 
 ### Components
 - **Logo**: Top-left corner, 90x36px
-- **Digital Clock**: Top-right corner, updates every second
+- **Digital Clock**: Top-right corner, DD/MM HH:MM:SS format với color indicator
 - **WebView**: Full screen dashboard content
 - **Announcement**: Full-screen overlay when active
-- **Status Indicator**: Bottom-right, 8x8px circle
+- **Error Display**: Bottom-left corner, colored dot + error message
 - **Version Info**: Bottom-right, small text
 
-## 🎯 Status Indicator
+## 🎯 Clock Color Indicator
 
-### Colors & Meanings
-- 🔴 **Red**: Config API failed
-  - ERPNext server not reachable
-  - API authentication failed
-  - Network connectivity issues
+### Colors & Meanings (Priority Order)
+- 🔴 **Red (Highest Priority)**: Ping server failed
+  - Cannot reach ERPNext server
+  - Network connectivity completely down
+  - DNS resolution failed
+  - **Action**: WiFi auto-reset (off→on→wait 10s)
 
-- 🟠 **Orange**: WebView/Content load failed  
-  - Dashboard URL not accessible
-  - WebView timeout
-  - Content checking failed
+- 🟡 **Yellow**: HTTP request failed (but ping OK)
+  - Server reachable but HTTP error (4xx, 5xx)
+  - API authentication issues
+  - ERPNext service problems
+  - **Action**: Retry HTTP without wifi reset
 
-- ⚪ **Transparent**: All systems operational
-  - Config loaded successfully
-  - WebView working
+- 🟠 **Orange**: Config/Content error
+  - Invalid dashboard URL (about:blank)
+  - Config parsing failed
+  - WebView initialization error
+  - **Action**: Use fallback/mock config
+
+- ⚫ **Black (Normal)**: All systems operational
+  - Ping successful + HTTP successful
+  - Config loaded + WebView working
   - All timers active
+
+## 📋 Error Display Widget
+
+### Features
+- **Location**: Bottom-left corner của màn hình
+- **Components**: Colored dot + detailed error message
+- **Auto-hide**: Tự động ẩn khi không có lỗi
+- **Color coding**: Tương ứng với clock color indicator
+
+### Error Message Types
+- **Config Error**: "Config Error: [chi tiết lỗi]"
+  - Invalid dashboard URL
+  - Server không trả về config
+  - Config parsing failed
+- **Network Error**: "Network Error: Cannot reach server - WiFi reset in progress"
+  - Gateway không reachable (10.0.0.1)
+  - Server không ping được
+  - WiFi reset đang diễn ra
+- **HTTP Error**: "HTTP Error: Server reachable but HTTP failed"
+  - Server ping OK nhưng HTTP request thất bại
+  - API authentication issues
+  - Server trả về 4xx/5xx codes
+- **URL Error**: "URL Error: Dashboard URL check failed"
+  - Dashboard URL không load được
+  - WebView validation failed
+
+### Visual Design
+```
+┌────────────────────────────────┐
+│ ● Config Error: Invalid URL   │
+└────────────────────────────────┘
+```
+- **Colored dot**: Red/Yellow/Orange tương ứng với loại lỗi
+- **Text style**: Small, readable font
+- **Max width**: 400px để tránh overflow
+- **Position**: Fixed bottom-left (2px từ cạnh)
 
 ## 🔍 Debug & Logging
 
 ### Console Output Examples
 ```
 I/flutter: Smart reload started
-I/flutter: Config changed, updating...
-I/flutter: Setting up timers due to time changes
+I/flutter: App initialized, checking for config changes
+I/flutter: URL valid, reloading WebView
+I/flutter: Ping successful - network OK, loading config
+I/flutter: Ping failed - attempting wifi reset
+I/flutter: Toggle WiFi: OFF
+I/flutter: Toggle WiFi: ON
+I/flutter: Waiting 10s for wifi reconnection...
+I/flutter: Retrying config load after wifi reset
 I/flutter: Exit timer set for 23:00:00
 I/flutter: Announcement timer set: 09:00 for 30min
-I/flutter: Content changed, reloading WebView
-I/flutter: Using mock TV config
 ```
 
 ### Error Messages
 ```
-I/flutter: Error fetching TV config: TimeoutException
-I/flutter: Timeout - check network connection
-I/flutter: Network error: Connection refused
-I/flutter: WebView error: net::ERR_CONNECTION_TIMED_OUT
+I/flutter: Post-init config error: Connection refused - trying network recovery
+I/flutter: Handling network failure - checking with ping
+I/flutter: Pinging server: erp-sonnt.tiqn.local
+I/flutter: Ping failed: erp-sonnt.tiqn.local - SocketException
+I/flutter: Ping failed - resetting wifi
+I/flutter: WiFi toggle successful: disabled
+I/flutter: WiFi toggle successful: enabled
+I/flutter: URL error - trying network recovery
+I/flutter: Ignoring connection timeout error - ping will handle network detection
 ```
 
 ## 🛠 Troubleshooting
 
 ### Common Issues
 
-#### Status Indicator Always Red 🔴
-**Symptoms**: Config không load được
+#### Clock Always Red 🔴
+**Symptoms**: Ping server thất bại, wifi được reset liên tục
 **Causes**:
-- ERPNext server down
-- Wrong API URL
-- Network connectivity issues
-- Authentication problems
+- Network hoàn toàn down
+- DNS server không hoạt động
+- ERPNext server IP không reachable
+- Firewall block ping packets
 
 **Solutions**:
-1. Check ERPNext server status
-2. Verify API URL: `http://IP:PORT/api/resource/TV Config/config`
-3. Test network connectivity
-4. Check firewall settings
-5. Verify API permissions
+1. Check physical network connection
+2. Test ping manually: `ping erp-sonnt.tiqn.local`
+3. Verify DNS resolution
+4. Check firewall/router settings
+5. Verify ERPNext server is running
+6. Check IP address trong getServerHost()
 
-#### Status Indicator Always Orange 🟠
-**Symptoms**: WebView không load dashboard
+#### Clock Always Yellow 🟡
+**Symptoms**: Ping OK nhưng HTTP requests thất bại
 **Causes**:
-- Dashboard URL không accessible
-- WebView timeout
-- Firewall blocking dashboard
+- ERPNext service down (server running nhưng app down)
+- HTTP authentication failed
+- API endpoint không exist
+- Server trả về 4xx/5xx errors
 
 **Solutions**:
-1. Test dashboard URL in browser
-2. Check network connectivity to dashboard server
-3. Verify dashboard_link in ERPNext config
-4. Check firewall/proxy settings
+1. Check ERPNext service status
+2. Test API manually: `curl http://erp-sonnt.tiqn.local/api/resource/TV Config/config`
+3. Verify API permissions
+4. Check ERPNext logs
+5. Verify authentication headers
+
+#### Clock Always Orange 🟠
+**Symptoms**: Config parsing failed, sử dụng mock data
+**Causes**:
+- Dashboard URL = 'about:blank'
+- Config format không đúng
+- WebView initialization error
+
+**Solutions**:
+1. Check dashboard_link trong ERPNext config
+2. Verify config data structure
+3. Test dashboard URL in browser
+4. Check ERPNext TV Config DocType
 
 #### Timers Không Hoạt Động
 **Symptoms**: Exit timer hoặc announcement không chạy
@@ -298,11 +399,26 @@ curl -X GET "http://YOUR_IP/api/resource/TV Config/config" \
   -H "Content-Type: application/json"
 ```
 
+#### Test Ping Functionality
+```bash
+# Test ping manually
+ping erp-sonnt.tiqn.local  # Debug mode
+ping erp.tiqn.local        # Production mode
+
+# Test DNS resolution
+nslookup erp-sonnt.tiqn.local
+```
+
 #### Check Network Connectivity
 ```dart
-// Trong _performNetworkDiagnostics()
-final hasInternet = await NetworkDiagnostics.hasInternetConnection();
-final latency = await NetworkDiagnostics.measureLatency('google.com');
+// Test ping functionality
+final serverHost = getServerHost();
+final pingSuccess = await pingServer(serverHost);
+if (kDebugMode) print('Ping result: $pingSuccess');
+
+// Test WiFi control
+final wifiOff = await toggleWifi(enable: false);
+final wifiOn = await toggleWifi(enable: true);
 ```
 
 ## 📈 Performance Optimizations
@@ -356,9 +472,14 @@ headers: {
 ### Production Settings
 ```dart
 // Conservative timeouts for production
-static const Duration _timeout = Duration(seconds: 45);
-static const bool _enableContentChecking = false; // Disable if not needed
-static const int _contentCheckCooldown = 60; // Longer cooldown
+static const Duration _timeout = Duration(seconds: 30);
+
+// Ping settings
+static const int _pingTimeout = 5; // seconds
+
+// WiFi reset delays
+static const Duration _wifiOffDelay = Duration(seconds: 2);
+static const Duration _wifiReconnectWait = Duration(seconds: 10);
 ```
 
 ### Monitoring
@@ -373,10 +494,11 @@ static const int _contentCheckCooldown = 60; // Longer cooldown
 ### Feature Flags
 ```dart
 class FeatureFlags {
+  static const bool enablePingBasedReload = true;
+  static const bool enableWifiAutoRecovery = true;
+  static const bool enableClockColorIndicator = true;
   static const bool enableSmartReload = true;
   static const bool enableNetworkDiagnostics = true;
-  static const bool enableContentChecking = true;
-  static const bool enableRetryMechanism = true;
 }
 ```
 
@@ -407,6 +529,14 @@ class PerformanceMonitor {
   static void trackWebViewLoadTime(Duration duration) {
     if (kDebugMode) print('WebView load: ${duration.inMilliseconds}ms');
   }
+  
+  static void trackPingLatency(String host, Duration duration) {
+    if (kDebugMode) print('Ping $host: ${duration.inMilliseconds}ms');
+  }
+  
+  static void trackWifiResetCycle(Duration totalTime) {
+    if (kDebugMode) print('WiFi reset cycle: ${totalTime.inSeconds}s');
+  }
 }
 ```
 
@@ -436,25 +566,29 @@ class TVHttpClient {
 }
 ```
 
-### NetworkDiagnostics Class
+### Network Functions
 ```dart
-class NetworkDiagnostics {
-  static Future<bool> pingHost(String host);
-  static Future<bool> hasInternetConnection();
-  static Future<Duration?> measureLatency(String host);
-}
+// Ping server to check network connectivity
+Future<bool> pingServer(String host, {int timeout = 5});
+
+// Get server host from API URL
+String getServerHost();
+
+// WiFi IOT control for turning wifi off/on
+Future<bool> toggleWifi({required bool enable});
 ```
 
 ## 🔄 Version History
 
-### v1.0.0 - Enhanced Version
-- ✅ Smart reload system
+### v1.0.0 - Enhanced Version with Ping-Based Recovery
+- ✅ Ping-based smart reload system
+- ✅ WiFi auto-recovery (off→on→wait 10s)
+- ✅ Clock color indicators (4 states)
+- ✅ HTTP-first approach (only ping on errors) 
+- ✅ Intelligent error handling (ping vs HTTP vs config)
 - ✅ Unified 30s timeout
 - ✅ Intelligent timer management
-- ✅ Status indicator
-- ✅ Enhanced error handling
-- ✅ Network diagnostics
-- ✅ Content change detection
+- ✅ Enhanced network diagnostics
 - ✅ Code optimization (50% reduction)
 
 ## 📞 Support

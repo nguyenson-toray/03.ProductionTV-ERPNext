@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'dart:async';
+import 'dart:io';
 
 /// HTTP Client for TV App
 class TVHttpClient {
@@ -181,6 +182,168 @@ Map<String, dynamic>? _findMatchingConfig(
   }
 
   return configData;
+}
+
+/// Test network connectivity using internal network (gateway + server)
+Future<bool> pingServer(String host, {int timeout = 5}) async {
+  if (kDebugMode) print('🔍 Testing internal network connectivity to: $host (timeout: ${timeout}s)');
+  
+  // Method 1: Test local network connectivity via default gateway
+  final hasLocalNetwork = await _testGatewayConnectivity();
+  if (!hasLocalNetwork) {
+    if (kDebugMode) print('❌ No local network connectivity - Gateway unreachable');
+    return false;
+  }
+  
+  // Method 2: Test target server connectivity  
+  final serverReachable = await _testServerConnectivity(host, timeout);
+  if (kDebugMode) print(serverReachable ? '✅ Server reachable' : '❌ Server unreachable');
+  
+  return serverReachable;
+}
+
+/// Test local network connectivity via default gateway
+Future<bool> _testGatewayConnectivity() async {
+  const defaultGateway = '10.0.0.1';
+  
+  try {
+    if (kDebugMode) print('📡 Testing gateway connectivity: $defaultGateway');
+    
+    // Try to connect to default gateway via HTTP (most routers have web interface)
+    final stopwatch = Stopwatch()..start();
+    final response = await TVHttpClient.get(
+      'http://$defaultGateway',
+      timeout: Duration(seconds: 3),
+    );
+    stopwatch.stop();
+    
+    // Any response from gateway means local network is working
+    if (response.statusCode > 0) {
+      if (kDebugMode) print('✅ Gateway reachable: $defaultGateway (${stopwatch.elapsedMilliseconds}ms) - Status ${response.statusCode}');
+      return true;
+    }
+    
+    if (kDebugMode) print('❌ Gateway HTTP failed: $defaultGateway');
+    return false;
+  } catch (e) {
+    // Try fallback method - DNS lookup of gateway
+    try {
+      final addresses = await InternetAddress.lookup(defaultGateway)
+          .timeout(Duration(seconds: 2));
+      
+      if (addresses.isNotEmpty) {
+        if (kDebugMode) print('✅ Gateway reachable via DNS lookup: $defaultGateway');
+        return true;
+      }
+    } catch (e2) {
+      if (kDebugMode) print('❌ Gateway completely unreachable: $defaultGateway - $e');
+    }
+    
+    return false;
+  }
+}
+
+/// Test connectivity to server host using internal network
+Future<bool> _testServerConnectivity(String host, int timeout) async {
+  try {
+    if (kDebugMode) print('🎯 Testing server connectivity: $host');
+    final stopwatch = Stopwatch()..start();
+    
+    // Try DNS lookup first to get server IP
+    final addresses = await InternetAddress.lookup(host)
+        .timeout(Duration(seconds: timeout ~/ 2));
+    
+    if (addresses.isEmpty) {
+      if (kDebugMode) print('❌ Server DNS lookup failed: $host');
+      return false;
+    }
+    
+    final serverIp = addresses.first.address;
+    if (kDebugMode) print('✅ Server DNS lookup OK: $host → $serverIp');
+    
+    // Try HTTP connection to verify actual server connectivity
+    try {
+      final response = await TVHttpClient.get(
+        'http://$host',
+        timeout: Duration(seconds: timeout),
+      );
+      stopwatch.stop();
+      
+      if (kDebugMode) print('✅ Server HTTP test: $host (${stopwatch.elapsedMilliseconds}ms) - Status ${response.statusCode}');
+      return true;
+    } catch (e) {
+      stopwatch.stop();
+      if (kDebugMode) print('❌ Server HTTP test failed: $host (${stopwatch.elapsedMilliseconds}ms) - $e');
+      return false;
+    }
+  } catch (e) {
+    if (kDebugMode) print('❌ Server connectivity test error: $host - $e');
+    return false;
+  }
+}
+
+/// Get server host from API URL
+String getServerHost() {
+  if (kDebugMode) {
+    return 'erp-sonnt.tiqn.local';
+  } else {
+    return 'erp.tiqn.local';
+  }
+}
+
+/// Wifi IOT control for turning wifi off/on
+Future<bool> toggleWifi({required bool enable}) async {
+  try {
+    if (kDebugMode) print('Toggle WiFi: ${enable ? "ON" : "OFF"}');
+    
+    // Try multiple methods for WiFi control
+    bool success = false;
+    
+    // Method 1: Try with su -c (requires root)
+    try {
+      final command = enable ? 'svc wifi enable' : 'svc wifi disable';
+      final result = await Process.run('su', ['-c', command]);
+      
+      if (result.exitCode == 0) {
+        if (kDebugMode) print('WiFi toggle successful (su): ${enable ? "enabled" : "disabled"}');
+        success = true;
+      } else {
+        if (kDebugMode) print('WiFi toggle failed (su): ${result.stderr}');
+      }
+    } catch (e) {
+      if (kDebugMode) print('WiFi toggle (su) error: $e');
+    }
+    
+    // Method 2: Try direct shell command if su failed
+    if (!success) {
+      try {
+        final command = enable ? 'svc wifi enable' : 'svc wifi disable';
+        final result = await Process.run('sh', ['-c', command]);
+        
+        if (result.exitCode == 0) {
+          if (kDebugMode) print('WiFi toggle successful (sh): ${enable ? "enabled" : "disabled"}');
+          success = true;
+        } else {
+          if (kDebugMode) print('WiFi toggle failed (sh): ${result.stderr}');
+        }
+      } catch (e) {
+        if (kDebugMode) print('WiFi toggle (sh) error: $e');
+      }
+    }
+    
+    // Method 3: Fallback - just log and return true (for testing)
+    if (!success) {
+      if (kDebugMode) print('WiFi toggle fallback: Simulating ${enable ? "ON" : "OFF"} (no actual control)');
+      // In production, you might want to return false here
+      // For testing/debugging, we'll return true to continue the flow
+      success = kDebugMode; // true in debug, false in release
+    }
+    
+    return success;
+  } catch (e) {
+    if (kDebugMode) print('WiFi toggle general error: $e');
+    return false;
+  }
 }
 
 /// Fetch config with fallback to mock data
